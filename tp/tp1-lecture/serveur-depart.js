@@ -9,7 +9,8 @@
 // Puis, dans un second terminal : node tp/tp1-lecture/sonde.js bloquant (ou flux)
 
 import express from "express";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 
 const FICHIER = process.argv[2] ?? "data/mesures-SN-CASA-2026-10-31.ndjson";
 
@@ -27,15 +28,49 @@ app.get("/ping", (req, res) => {
   res.json({ pong: true });
 });
 
-// À ÉCRIRE : POST /import/bloquant
-// 1. Lire tout le fichier avec readFileSync (import depuis "node:fs").
-// 2. Le découper en lignes, en ignorant les lignes vides.
-// 3. Analyser chaque ligne avec JSON.parse et additionner les weight_kg.
-// 4. Répondre { mesures, poids_moyen_kg, duree_ms } (duree_ms : mesurée avec performance.now()).
+// POST /import/bloquant : lit tout le fichier d'un coup (readFileSync).
+// Tant que JSON.parse tourne sur les 144 000 lignes, la boucle d'événements est
+// bloquée : /ping doit attendre la fin de l'import pour obtenir une réponse.
+app.post("/import/bloquant", (req, res) => {
+  const debut = performance.now();
 
-// À ÉCRIRE : POST /import/flux
-// Le même calcul, en lisant le fichier avec createReadStream (node:fs) et
-// createInterface (node:readline), puis une boucle for await … of sur les lignes.
+  let mesures = 0;
+  let total = 0;
+
+  const contenu = readFileSync(FICHIER, "utf8");
+  for (const ligne of contenu.split("\n")) {
+    if (ligne.trim() === "") continue;
+    const mesure = JSON.parse(ligne);
+    total += mesure.weight_kg;
+    mesures += 1;
+  }
+
+  const poids_moyen_kg = mesures > 0 ? Number((total / mesures).toFixed(2)) : null;
+  const duree_ms = Math.round(performance.now() - debut);
+  res.json({ mesures, poids_moyen_kg, duree_ms });
+});
+
+// POST /import/flux : le même calcul, mais le fichier est lu ligne par ligne
+// (createReadStream + readline). Entre deux morceaux, la boucle d'événements
+// reprend la main : /ping est servi pendant l'import.
+app.post("/import/flux", async (req, res) => {
+  const debut = performance.now();
+
+  let mesures = 0;
+  let total = 0;
+
+  const lignes = createInterface({ input: createReadStream(FICHIER) });
+  for await (const ligne of lignes) {
+    if (ligne.trim() === "") continue;
+    const mesure = JSON.parse(ligne);
+    total += mesure.weight_kg;
+    mesures += 1;
+  }
+
+  const poids_moyen_kg = mesures > 0 ? Number((total / mesures).toFixed(2)) : null;
+  const duree_ms = Math.round(performance.now() - debut);
+  res.json({ mesures, poids_moyen_kg, duree_ms });
+});
 
 app.listen(4000, () => {
   console.log(`Serveur du TP 1 sur http://localhost:4000, fichier : ${FICHIER}`);
